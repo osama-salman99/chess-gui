@@ -7,6 +7,8 @@ import osmosis.chessdemo.chess.position.ChessPosition;
 import osmosis.chessdemo.chess.position.File;
 import osmosis.chessdemo.chess.position.Rank;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Optional;
 
 import static osmosis.chessdemo.chess.move.validator.MoveValidator.isEmptyPath;
@@ -154,6 +156,80 @@ public class PositionValidator {
 		if (ctx.currentTurn().equals(occupying.getColor())) {
 			throw new InvalidMoveException("Player is taking their own piece");
 		}
+	}
+
+	// ── Candidate generation ──────────────────────────────────────────────────
+
+	public List<ChessPosition> candidateDestinations(Piece piece) {
+		if (piece instanceof Pawn) return pawnCandidates((Pawn) piece);
+		if (piece instanceof Knight) return knightCandidates(piece.getPosition());
+		if (piece instanceof Bishop) return slidingCandidates(piece.getPosition(), DIAGONAL_DIRS);
+		if (piece instanceof Rook) return slidingCandidates(piece.getPosition(), STRAIGHT_DIRS);
+		if (piece instanceof Queen) return slidingCandidates(piece.getPosition(), ALL_DIRS);
+		if (piece instanceof King) return kingCandidates(piece);
+		return List.of();
+	}
+
+	private static final int[][] DIAGONAL_DIRS = {{1, 1}, {1, -1}, {-1, 1}, {-1, -1}};
+	private static final int[][] STRAIGHT_DIRS = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
+	private static final int[][] ALL_DIRS = {{1, 1}, {1, -1}, {-1, 1}, {-1, -1}, {1, 0}, {-1, 0}, {0, 1}, {0, -1}};
+	private static final int[][] KNIGHT_OFFSETS = {{2, 1}, {2, -1}, {-2, 1}, {-2, -1}, {1, 2}, {1, -2}, {-1, 2}, {-1, -2}};
+
+	private List<ChessPosition> slidingCandidates(ChessPosition from, int[][] dirs) {
+		List<ChessPosition> candidates = new ArrayList<>();
+		for (int[] dir : dirs) {
+			for (int f = from.getFile().getFileNumber() + dir[0], r = from.getRank().getRankNumber() + dir[1];
+				 f >= 1 && f <= 8 && r >= 1 && r <= 8;
+				 f += dir[0], r += dir[1]) {
+				candidates.add(new ChessPosition(File.getFile(f), Rank.getRank(r)));
+				if (ctx.boardSquares().get(new ChessPosition(File.getFile(f), Rank.getRank(r))).isPresent()) break;
+			}
+		}
+		return candidates;
+	}
+
+	private static List<ChessPosition> knightCandidates(ChessPosition from) {
+		List<ChessPosition> candidates = new ArrayList<>();
+		for (int[] off : KNIGHT_OFFSETS) {
+			int f = from.getFile().getFileNumber() + off[0];
+			int r = from.getRank().getRankNumber() + off[1];
+			if (f >= 1 && f <= 8 && r >= 1 && r <= 8) {
+				candidates.add(new ChessPosition(File.getFile(f), Rank.getRank(r)));
+			}
+		}
+		return candidates;
+	}
+
+	private static List<ChessPosition> pawnCandidates(Pawn pawn) {
+		List<ChessPosition> candidates = new ArrayList<>();
+		ChessPosition pos = pawn.getPosition();
+		int dir = PieceColor.WHITE.equals(pawn.getColor()) ? 1 : -1;
+		int rank = pos.getRank().getRankNumber();
+		int file = pos.getFile().getFileNumber();
+		if (rank + dir >= 1 && rank + dir <= 8) {
+			candidates.add(new ChessPosition(pos.getFile(), Rank.getRank(rank + dir)));
+			boolean onStart = (PieceColor.WHITE.equals(pawn.getColor()) && rank == 2)
+					|| (PieceColor.BLACK.equals(pawn.getColor()) && rank == 7);
+			if (onStart) candidates.add(new ChessPosition(pos.getFile(), Rank.getRank(rank + 2 * dir)));
+			if (file > 1) candidates.add(new ChessPosition(File.getFile(file - 1), Rank.getRank(rank + dir)));
+			if (file < 8) candidates.add(new ChessPosition(File.getFile(file + 1), Rank.getRank(rank + dir)));
+		}
+		return candidates;
+	}
+
+	private List<ChessPosition> kingCandidates(Piece king) {
+		List<ChessPosition> candidates = new ArrayList<>();
+		ChessPosition pos = king.getPosition();
+		for (int[] dir : ALL_DIRS) {
+			int f = pos.getFile().getFileNumber() + dir[0];
+			int r = pos.getRank().getRankNumber() + dir[1];
+			if (f >= 1 && f <= 8 && r >= 1 && r <= 8) {
+				candidates.add(new ChessPosition(File.getFile(f), Rank.getRank(r)));
+			}
+		}
+		candidates.add(new ChessPosition(File.G, pos.getRank()));
+		candidates.add(new ChessPosition(File.C, pos.getRank()));
+		return candidates;
 	}
 
 	private static boolean isPawnAttackingKing(Pawn pawn, Piece king) {

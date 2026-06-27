@@ -18,6 +18,7 @@ import osmosis.chessdemo.chess.position.Rank;
 import osmosis.chessdemo.functionailties.DraggableImageView;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
@@ -36,6 +37,7 @@ public class Board {
 	private final GridPane boardGridPane;
 	private final BoardSquares boardSquares;
 	private final Map<Piece, DraggableImageView> pieceViews = new IdentityHashMap<>();
+	private final Map<String, Integer> positionHistory = new HashMap<>();
 	private PieceColor currentTurn;
 
 	private Optional<ChessPosition> enPassantTarget = Optional.empty();
@@ -257,6 +259,23 @@ public class Board {
 	// ── Game-end detection ───────────────────────────────────────────────────
 
 	private void checkForGameEnd() {
+		String posKey = positionKey();
+		int posCount = positionHistory.merge(posKey, 1, Integer::sum);
+		if (posCount >= 5) {
+			log.info("Draw by fivefold repetition");
+			gameOverHandler.accept("Draw! Fivefold repetition.");
+			return;
+		}
+		if (posCount >= 3) {
+			log.info("Draw by threefold repetition");
+			gameOverHandler.accept("Draw! Threefold repetition.");
+			return;
+		}
+		if (halfMoveClock >= 150) {
+			log.info("Draw by 75-move rule (half-move clock: {})", halfMoveClock);
+			gameOverHandler.accept("Draw! 75-move rule.");
+			return;
+		}
 		if (halfMoveClock >= 100) {
 			log.info("Draw by 50-move rule (half-move clock: {})", halfMoveClock);
 			gameOverHandler.accept("Draw! 50-move rule.");
@@ -277,21 +296,57 @@ public class Board {
 
 	public boolean hasAnyLegalMove() {
 		PositionValidator v = validator();
-		List<Piece> currentPieces = new ArrayList<>(boardSquares.getAll());
-		for (Piece piece : currentPieces) {
+		for (Piece piece : new ArrayList<>(boardSquares.getAll())) {
 			if (!currentTurn.equals(piece.getColor())) continue;
-			for (int file = 1; file <= 8; file++) {
-				for (int rank = 1; rank <= 8; rank++) {
-					ChessPosition dest = new ChessPosition(File.getFile(file), Rank.getRank(rank));
-					try {
-						v.validateMove(piece, dest);
-						return true;
-					} catch (Exception ignored) {
-					}
+			for (ChessPosition dest : v.candidateDestinations(piece)) {
+				try {
+					v.validateMove(piece, dest);
+					return true;
+				} catch (Exception ignored) {
 				}
 			}
 		}
 		return false;
+	}
+
+	private String positionKey() {
+		StringBuilder sb = new StringBuilder();
+		for (int rank = 8; rank >= 1; rank--) {
+			int empty = 0;
+			for (int file = 1; file <= 8; file++) {
+				Optional<Piece> p = boardSquares.get(new ChessPosition(File.getFile(file), Rank.getRank(rank)));
+				if (p.isPresent()) {
+					if (empty > 0) { sb.append(empty); empty = 0; }
+					sb.append(pieceChar(p.get()));
+				} else {
+					empty++;
+				}
+			}
+			if (empty > 0) sb.append(empty);
+			if (rank > 1) sb.append('/');
+		}
+		sb.append(PieceColor.WHITE.equals(currentTurn) ? " w " : " b ");
+		if (!whiteKingSideCastle && !whiteQueenSideCastle && !blackKingSideCastle && !blackQueenSideCastle) {
+			sb.append('-');
+		} else {
+			if (whiteKingSideCastle) sb.append('K');
+			if (whiteQueenSideCastle) sb.append('Q');
+			if (blackKingSideCastle) sb.append('k');
+			if (blackQueenSideCastle) sb.append('q');
+		}
+		sb.append(' ').append(enPassantTarget.map(Object::toString).orElse("-"));
+		return sb.toString();
+	}
+
+	private static char pieceChar(Piece piece) {
+		char c;
+		if (piece instanceof King) c = 'k';
+		else if (piece instanceof Queen) c = 'q';
+		else if (piece instanceof Rook) c = 'r';
+		else if (piece instanceof Bishop) c = 'b';
+		else if (piece instanceof Knight) c = 'n';
+		else c = 'p';
+		return PieceColor.WHITE.equals(piece.getColor()) ? Character.toUpperCase(c) : c;
 	}
 
 	public boolean isKingCurrentlyInCheck() {
@@ -338,6 +393,7 @@ public class Board {
 		enPassantTarget = Optional.empty();
 		whiteKingSideCastle = whiteQueenSideCastle = blackKingSideCastle = blackQueenSideCastle = true;
 		halfMoveClock = 0;
+		positionHistory.clear();
 		lastMoveFrom = Optional.empty();
 		lastMoveTo = Optional.empty();
 		currentPlayerKingInCheck = false;

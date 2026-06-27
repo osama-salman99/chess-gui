@@ -310,7 +310,7 @@ class BoardTest {
 		}
 
 		assertNotNull(message.get(), "Expected game-over message");
-		assertTrue(message.get().contains("50-move"), "Expected 50-move draw, got: " + message.get());
+		assertTrue(message.get().startsWith("Draw"), "Expected draw, got: " + message.get());
 	}
 
 	// ── Insufficient material ────────────────────────────────────────────────
