@@ -18,12 +18,6 @@ public class BoardSquares {
 		pieces.forEach(this::put);
 	}
 
-	private static BoardSquares of(Collection<Piece> pieces) {
-		BoardSquares boardSquares = new BoardSquares(pieces);
-		pieces.forEach(boardSquares::put);
-		return boardSquares;
-	}
-
 	public void put(Piece piece) {
 		pieces.put(getChessNotation(piece.getPosition()), piece);
 	}
@@ -40,7 +34,11 @@ public class BoardSquares {
 		return pieces.values();
 	}
 
+	public void clear() {
+		pieces.clear();
+	}
+
 	public BoardSquares copy() {
-		return of(pieces.values());
+		return new BoardSquares(pieces.values());
 	}
 }
