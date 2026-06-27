@@ -278,6 +278,75 @@ class BoardTest {
 		assertTrue(board.getPieceAt(new ChessPosition(File.E, Rank.SECOND)).filter(p -> p instanceof Pawn).isPresent());
 	}
 
+	// ── 50-move rule ─────────────────────────────────────────────────────────
+
+	@Test
+	void given50MoveRuleExceededWhenNextMovePlayedThenDrawReported() throws Exception {
+		// Two kings and two rooks — no pawns, every rook move increments the clock
+		// We just need the clock to hit 100 (50 full moves without pawn or capture)
+		String fen = "k6r/8/8/8/8/8/8/K6R";
+		Board board = Board.createChessBoard(fen, gridPane);
+
+		AtomicReference<String> message = new AtomicReference<>();
+		board.setGameOverHandler(message::set);
+
+		// Play rook shuffles until the clock trips 100 half-moves
+		// White rook h1↔g1, Black rook h8↔g8, repeat
+		for (int i = 0; i < 50; i++) {
+			File whiteRookFile = (i % 2 == 0) ? File.H : File.G;
+			File whiteRookTarget = (i % 2 == 0) ? File.G : File.H;
+			File blackRookFile = (i % 2 == 0) ? File.H : File.G;
+			File blackRookTarget = (i % 2 == 0) ? File.G : File.H;
+
+			Piece whiteRook = findPiece(board, whiteRookFile, Rank.FIRST);
+			board.makeMove(whiteRook, new ChessPosition(whiteRookTarget, Rank.FIRST));
+
+			if (message.get() != null) break;
+
+			Piece blackRook = findPiece(board, blackRookFile, Rank.EIGHTH);
+			board.makeMove(blackRook, new ChessPosition(blackRookTarget, Rank.EIGHTH));
+
+			if (message.get() != null) break;
+		}
+
+		assertNotNull(message.get(), "Expected game-over message");
+		assertTrue(message.get().contains("50-move"), "Expected 50-move draw, got: " + message.get());
+	}
+
+	// ── Insufficient material ────────────────────────────────────────────────
+
+	@Test
+	void givenKingVsKingWhenMovePlayedThenInsufficientMaterialReported() throws Exception {
+		// White king captures the last black piece (a pawn on b2), leaving King vs King
+		String fen = "7k/8/8/8/8/8/1p6/K7";
+		Board board = Board.createChessBoard(fen, gridPane);
+
+		AtomicReference<String> message = new AtomicReference<>();
+		board.setGameOverHandler(message::set);
+
+		Piece whiteKing = findPiece(board, File.A, Rank.FIRST);
+		board.makeMove(whiteKing, new ChessPosition(File.B, Rank.SECOND));
+
+		assertNotNull(message.get());
+		assertTrue(message.get().contains("Insufficient material"), "Got: " + message.get());
+	}
+
+	@Test
+	void givenKingAndBishopVsKingWhenMovePlayedThenInsufficientMaterialReported() throws Exception {
+		// White king captures last pawn, leaving K+B vs K
+		String fen = "7k/8/8/8/8/8/1p6/KB6";
+		Board board = Board.createChessBoard(fen, gridPane);
+
+		AtomicReference<String> message = new AtomicReference<>();
+		board.setGameOverHandler(message::set);
+
+		Piece whiteKing = findPiece(board, File.A, Rank.FIRST);
+		board.makeMove(whiteKing, new ChessPosition(File.B, Rank.SECOND));
+
+		assertNotNull(message.get());
+		assertTrue(message.get().contains("Insufficient material"), "Got: " + message.get());
+	}
+
 	// ── Helpers ──────────────────────────────────────────────────────────────
 
 	private Piece findPiece(Board board, File file, Rank rank) {

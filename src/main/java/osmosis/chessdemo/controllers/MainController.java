@@ -7,6 +7,8 @@ import javafx.scene.layout.Background;
 import javafx.scene.layout.BackgroundImage;
 import javafx.scene.layout.BackgroundSize;
 import javafx.scene.layout.GridPane;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import osmosis.chessdemo.chess.board.Board;
 import osmosis.chessdemo.chess.move.initiator.MoveInitiator;
 import osmosis.chessdemo.chess.pieces.Pawn;
@@ -19,6 +21,7 @@ import java.util.Objects;
 import java.util.ResourceBundle;
 
 public class MainController extends Controller {
+	private static final Logger log = LoggerFactory.getLogger(MainController.class);
 	public GridPane boardGridPane;
 	private Board board;
 
@@ -32,6 +35,7 @@ public class MainController extends Controller {
 
 		board = Board.createChessBoard(boardGridPane);
 		MoveInitiator.getInstance().registerBoard(board);
+		log.info("Chess board initialized");
 
 		board.setPromotionChooser(this::showPromotionDialog);
 		board.setGameOverHandler(this::handleGameOver);

@@ -2,6 +2,8 @@ package osmosis.chessdemo.chess.board;
 
 import javafx.scene.layout.GridPane;
 import javafx.scene.layout.Pane;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import osmosis.chessdemo.chess.exceptions.*;
 import osmosis.chessdemo.chess.fen.FenParser;
 import osmosis.chessdemo.chess.pieces.*;
@@ -15,11 +17,17 @@ import java.util.List;
 import java.util.Optional;
 import java.util.function.Consumer;
 import java.util.function.Function;
+import java.util.stream.Collectors;
 
 import static osmosis.chessdemo.chess.move.validator.MoveValidator.isEmptyPath;
 
 public class Board {
+	private static final Logger log = LoggerFactory.getLogger(Board.class);
 	private static final String NEW_GAME_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR";
+
+	private static final String CELL_HIGHLIGHT_LAST_MOVE = "-fx-background-color: rgba(255, 255, 0, 0.45);";
+	private static final String CELL_HIGHLIGHT_CHECK = "-fx-background-color: rgba(220, 50, 50, 0.55);";
+
 	private final GridPane boardGridPane;
 	private final BoardSquares boardSquares;
 	private PieceColor currentTurn;
@@ -33,14 +41,23 @@ public class Board {
 	private boolean blackKingSideCastle = true;
 	private boolean blackQueenSideCastle = true;
 
+	// Half-move clock for the 50-move rule (reset on pawn move or capture)
+	private int halfMoveClock = 0;
+
+	// Visual state cached between executeMove and refreshBoard
+	private Optional<ChessPosition> lastMoveFrom = Optional.empty();
+	private Optional<ChessPosition> lastMoveTo = Optional.empty();
+	private boolean currentPlayerKingInCheck = false;
+
 	// Callbacks set by the controller
 	private Function<PieceColor, Pawn.PromotionPiece> promotionChooser = color -> Pawn.PromotionPiece.Queen;
-	private Consumer<String> gameOverHandler = message -> System.out.println("Game over: " + message);
+	private Consumer<String> gameOverHandler = message -> log.info("Game over: {}", message);
 
 	private Board(GridPane boardGridPane, BoardSquares boardSquares) {
 		this.boardGridPane = boardGridPane;
 		this.boardSquares = boardSquares;
 		this.currentTurn = PieceColor.WHITE;
+		log.info("Board created — white to move");
 		refreshBoard();
 	}
 
@@ -68,12 +85,17 @@ public class Board {
 		this.gameOverHandler = gameOverHandler;
 	}
 
+	// ── Public move entry point ───────────────────────────────────────────────
+
 	public void makeMove(Piece piece, ChessPosition destinationPosition) {
 		boolean moveSuccessful = false;
 		try {
 			validateMove(piece, destinationPosition);
 			executeMove(piece, destinationPosition);
 			moveSuccessful = true;
+		} catch (InvalidMoveException e) {
+			log.debug("Invalid move {} → {}: {}", piece.getPosition(), destinationPosition, e.getMessage());
+			throw e;
 		} finally {
 			refreshBoard();
 		}
@@ -81,6 +103,8 @@ public class Board {
 			checkForGameEnd();
 		}
 	}
+
+	// ── Validation ───────────────────────────────────────────────────────────
 
 	public void validateMove(Piece piece, ChessPosition destinationPosition) {
 		validateTurn(piece);
@@ -96,22 +120,84 @@ public class Board {
 		validateKingCheck(piece, destinationPosition);
 	}
 
+	private void validateTurn(Piece piece) {
+		if (!currentTurn.equals(piece.getColor())) {
+			throw new WrongTurnException(currentTurn);
+		}
+	}
+
+	private static boolean isPawnAdvance(File currentFile, File destinationFile) {
+		return currentFile.absoluteDifference(destinationFile) == 0;
+	}
+
+	private void validatePawnMovement(Piece piece, ChessPosition destinationPosition, boolean occupyingPiecePresent) {
+		if (!(piece instanceof Pawn)) return;
+		boolean pawnAdvance = isPawnAdvance(piece.getPosition().getFile(), destinationPosition.getFile());
+		if (pawnAdvance && occupyingPiecePresent) {
+			throw new InvalidMoveException("Pawn advancing destination is occupied");
+		}
+		boolean isEnPassant = !pawnAdvance && !occupyingPiecePresent
+				&& enPassantTarget.map(destinationPosition::equals).orElse(false);
+		if (!pawnAdvance && !occupyingPiecePresent && !isEnPassant) {
+			throw new InvalidNumberException("Pawn is not taking any piece");
+		}
+	}
+
+	private void validatePathEmpty(Piece piece, ChessPosition destinationPosition) {
+		if (!(piece instanceof Knight) && !isEmptyPath(piece.getPosition(), destinationPosition, boardSquares)) {
+			throw new InvalidMoveException("Path is not empty");
+		}
+	}
+
+	private void validateTakingOwnPiece(Piece occupyingPiece) {
+		if (currentTurn.equals(occupyingPiece.getColor())) {
+			throw new InvalidMoveException("Player is taking their own piece");
+		}
+	}
+
+	private void validateKingCheck(Piece piece, ChessPosition destinationPosition) {
+		if (kingInCheck(piece, destinationPosition)) {
+			throw new KingInCheckException();
+		}
+	}
+
+	private static void validatePieceMovement(Piece piece, ChessPosition destinationPosition) {
+		if (!piece.isMovementValid(destinationPosition)) {
+			throw new InvalidMoveException("Invalid piece movement");
+		}
+	}
+
+	// ── Execution ────────────────────────────────────────────────────────────
+
 	private void executeMove(Piece piece, ChessPosition destinationPosition) {
 		ChessPosition origin = piece.getPosition();
 
 		if (isCastlingAttempt(piece, destinationPosition)) {
+			log.info("{} castles {}", colorName(piece.getColor()),
+					destinationPosition.getFile().getFileNumber() > origin.getFile().getFileNumber() ? "kingside" : "queenside");
 			executeCastling((King) piece, destinationPosition, origin);
 			currentTurn = flipTurn(currentTurn);
 			updateCastlingRights(piece, origin);
 			enPassantTarget = Optional.empty();
+			halfMoveClock++;
+			lastMoveFrom = Optional.of(origin);
+			lastMoveTo = Optional.of(destinationPosition);
+			currentPlayerKingInCheck = isKingCurrentlyInCheck();
+			if (currentPlayerKingInCheck) log.info("{} king is in check", colorName(currentTurn));
 			return;
 		}
 
 		boolean isEnPassant = isEnPassantCapture(piece, destinationPosition);
+		boolean isCapture = boardSquares.get(destinationPosition).isPresent() || isEnPassant;
 
 		if (isEnPassant) {
-			boardSquares.removePieceOn(new ChessPosition(destinationPosition.getFile(), origin.getRank()));
+			ChessPosition capturedPawnPos = new ChessPosition(destinationPosition.getFile(), origin.getRank());
+			boardSquares.get(capturedPawnPos).ifPresent(captured ->
+					log.info("{} captures {} en passant on {}", piece, captured, destinationPosition));
+			boardSquares.removePieceOn(capturedPawnPos);
 		} else {
+			boardSquares.get(destinationPosition).ifPresent(captured ->
+					log.info("{} captures {}", piece, captured));
 			revokeCapturedRookRights(destinationPosition);
 			boardSquares.removePieceOn(destinationPosition);
 		}
@@ -123,7 +209,16 @@ public class Board {
 
 		updateCastlingRights(piece, origin);
 		updateEnPassantTarget(piece, origin, destinationPosition);
+		halfMoveClock = (piece instanceof Pawn || isCapture) ? 0 : halfMoveClock + 1;
 		handlePromotion(piece, origin, destinationPosition);
+
+		lastMoveFrom = Optional.of(origin);
+		lastMoveTo = Optional.of(destinationPosition);
+		currentPlayerKingInCheck = isKingCurrentlyInCheck();
+
+		log.info("{} {} → {}{}", piece.getClass().getSimpleName(), origin, destinationPosition,
+				currentPlayerKingInCheck ? " (check!)" : "");
+		if (currentPlayerKingInCheck) log.info("{} king is in check", colorName(currentTurn));
 	}
 
 	// ── En passant ───────────────────────────────────────────────────────────
@@ -142,7 +237,9 @@ public class Board {
 		if (piece instanceof Pawn
 				&& Math.abs(destination.getRank().getRankNumber() - origin.getRank().getRankNumber()) == 2) {
 			int skippedRank = (origin.getRank().getRankNumber() + destination.getRank().getRankNumber()) / 2;
-			enPassantTarget = Optional.of(new ChessPosition(origin.getFile(), Rank.getRank(skippedRank)));
+			ChessPosition target = new ChessPosition(origin.getFile(), Rank.getRank(skippedRank));
+			enPassantTarget = Optional.of(target);
+			log.debug("En passant target set to {}", target);
 		} else {
 			enPassantTarget = Optional.empty();
 		}
@@ -159,8 +256,7 @@ public class Board {
 
 	private void validateCastling(King king, ChessPosition destination) {
 		boolean kingside = destination.getFile().getFileNumber() > king.getPosition().getFile().getFileNumber();
-		boolean hasRight = hasCastlingRight(king.getColor(), kingside);
-		if (!hasRight) {
+		if (!hasCastlingRight(king.getColor(), kingside)) {
 			throw new InvalidMoveException("Castling right is not available");
 		}
 		Rank castleRank = king.getPosition().getRank();
@@ -198,7 +294,8 @@ public class Board {
 
 		ChessPosition rookOrigin = new ChessPosition(kingside ? File.H : File.A, castleRank);
 		ChessPosition rookDestination = new ChessPosition(kingside ? File.F : File.D, castleRank);
-		Piece rook = boardSquares.get(rookOrigin).orElseThrow(() -> new InvalidMoveException("Rook not found for castling"));
+		Piece rook = boardSquares.get(rookOrigin)
+				.orElseThrow(() -> new InvalidMoveException("Rook not found for castling"));
 		boardSquares.removePieceOn(rookOrigin);
 		rook.setPosition(rookDestination);
 		boardSquares.put(rook);
@@ -244,17 +341,27 @@ public class Board {
 		Pawn.PromotionPiece choice = promotionChooser.apply(piece.getColor());
 		Piece promotionPiece = ((Pawn) piece).promote(choice, destinationPosition.getFile());
 		boardSquares.put(promotionPiece);
+		log.info("{} pawn promotes to {} on {}", colorName(piece.getColor()), choice, destinationPosition);
 	}
 
-	// ── Checkmate / Stalemate ────────────────────────────────────────────────
+	// ── Game-end detection ───────────────────────────────────────────────────
 
 	private void checkForGameEnd() {
+		if (halfMoveClock >= 100) {
+			log.info("Draw by 50-move rule (half-move clock: {})", halfMoveClock);
+			gameOverHandler.accept("Draw! 50-move rule.");
+			return;
+		}
+		if (isInsufficientMaterial()) {
+			log.info("Draw by insufficient material");
+			gameOverHandler.accept("Draw! Insufficient material.");
+			return;
+		}
 		if (hasAnyLegalMove()) return;
 		boolean inCheck = isKingCurrentlyInCheck();
 		String winner = PieceColor.WHITE.equals(currentTurn) ? "Black" : "White";
-		String message = inCheck
-				? winner + " wins! Checkmate."
-				: "Draw! Stalemate.";
+		String message = inCheck ? winner + " wins! Checkmate." : "Draw! Stalemate.";
+		log.info(message);
 		gameOverHandler.accept(message);
 	}
 
@@ -277,11 +384,32 @@ public class Board {
 	}
 
 	public boolean isKingCurrentlyInCheck() {
-		Piece king = boardSquares.getAll().stream()
+		return boardSquares.getAll().stream()
 				.filter(this::isCurrentKing)
 				.findAny()
-				.orElseThrow(() -> new IllegalStateException("No king found"));
-		return kingInCheck(king, king.getPosition());
+				.map(king -> kingInCheck(king, king.getPosition()))
+				.orElse(false);
+	}
+
+	private boolean isInsufficientMaterial() {
+		List<Piece> pieces = new ArrayList<>(boardSquares.getAll());
+		int total = pieces.size();
+		if (total == 2) return true; // King vs King
+		if (total == 3) {
+			return pieces.stream().anyMatch(p -> p instanceof Knight || p instanceof Bishop);
+		}
+		// King + Bishop vs King + Bishop — draw only if bishops share square colour
+		if (total == 4) {
+			List<Piece> bishops = pieces.stream().filter(p -> p instanceof Bishop).collect(Collectors.toList());
+			if (bishops.size() == 2) {
+				int parity1 = (bishops.get(0).getPosition().getFile().getFileNumber()
+						+ bishops.get(0).getPosition().getRank().getRankNumber()) % 2;
+				int parity2 = (bishops.get(1).getPosition().getFile().getFileNumber()
+						+ bishops.get(1).getPosition().getRank().getRankNumber()) % 2;
+				return parity1 == parity2;
+			}
+		}
+		return false;
 	}
 
 	// ── Reset ────────────────────────────────────────────────────────────────
@@ -297,56 +425,12 @@ public class Board {
 		currentTurn = PieceColor.WHITE;
 		enPassantTarget = Optional.empty();
 		whiteKingSideCastle = whiteQueenSideCastle = blackKingSideCastle = blackQueenSideCastle = true;
+		halfMoveClock = 0;
+		lastMoveFrom = Optional.empty();
+		lastMoveTo = Optional.empty();
+		currentPlayerKingInCheck = false;
+		log.info("Board reset — white to move");
 		refreshBoard();
-	}
-
-	// ── Existing validation helpers ──────────────────────────────────────────
-
-	private void validatePawnMovement(Piece piece, ChessPosition destinationPosition, boolean occupyingPiecePresent) {
-		if (!(piece instanceof Pawn)) return;
-		boolean pawnAdvance = isPawnAdvance(piece.getPosition().getFile(), destinationPosition.getFile());
-		if (pawnAdvance && occupyingPiecePresent) {
-			throw new InvalidMoveException("Pawn advancing destination is occupied");
-		}
-		boolean isEnPassant = !pawnAdvance && !occupyingPiecePresent
-				&& enPassantTarget.map(destinationPosition::equals).orElse(false);
-		if (!pawnAdvance && !occupyingPiecePresent && !isEnPassant) {
-			throw new InvalidNumberException("Pawn is not taking any piece");
-		}
-	}
-
-	private static boolean isPawnAdvance(File currentFile, File destinationFile) {
-		return currentFile.absoluteDifference(destinationFile) == 0;
-	}
-
-	private void validateTurn(Piece piece) {
-		if (!currentTurn.equals(piece.getColor())) {
-			throw new WrongTurnException(currentTurn);
-		}
-	}
-
-	private void validatePathEmpty(Piece piece, ChessPosition destinationPosition) {
-		if (!(piece instanceof Knight) && !isEmptyPath(piece.getPosition(), destinationPosition, boardSquares)) {
-			throw new InvalidMoveException("Path is not empty");
-		}
-	}
-
-	private void validateTakingOwnPiece(Piece occupyingPiece) {
-		if (currentTurn.equals(occupyingPiece.getColor())) {
-			throw new InvalidMoveException("Player is taking their own piece");
-		}
-	}
-
-	private void validateKingCheck(Piece piece, ChessPosition destinationPosition) {
-		if (kingInCheck(piece, destinationPosition)) {
-			throw new KingInCheckException();
-		}
-	}
-
-	private static void validatePieceMovement(Piece piece, ChessPosition destinationPosition) {
-		if (!piece.isMovementValid(destinationPosition)) {
-			throw new InvalidMoveException("Invalid piece movement");
-		}
 	}
 
 	// ── King-in-check simulation ─────────────────────────────────────────────
@@ -396,11 +480,25 @@ public class Board {
 	private void refreshBoard() {
 		boardGridPane.getChildren().clear();
 		double sideLength = boardGridPane.getPrefHeight() / 8;
-		for (int x = 0; x < 8; x++) {
-			for (int y = 0; y < 8; y++) {
-				boardGridPane.add(createEmptyCell(sideLength), x, y);
+
+		Optional<ChessPosition> checkKingPosition = currentPlayerKingInCheck
+				? boardSquares.getAll().stream().filter(this::isCurrentKing)
+						.map(Piece::getPosition).findAny()
+				: Optional.empty();
+
+		for (int col = 0; col < 8; col++) {
+			for (int row = 0; row < 8; row++) {
+				ChessPosition cellPosition = gridToChessPosition(col, row);
+				Pane cell = createEmptyCell(sideLength);
+				if (checkKingPosition.map(cellPosition::equals).orElse(false)) {
+					cell.setStyle(CELL_HIGHLIGHT_CHECK);
+				} else if (isLastMoveSquare(cellPosition)) {
+					cell.setStyle(CELL_HIGHLIGHT_LAST_MOVE);
+				}
+				boardGridPane.add(cell, col, row);
 			}
 		}
+
 		for (Piece piece : boardSquares.getAll()) {
 			DraggableImageView pieceImageView = piece.getImageView();
 			pieceImageView.setFitWidth(sideLength);
@@ -409,6 +507,15 @@ public class Board {
 			boardGridPane.add(pieceImageView, position.getFile().getFileNumber() - 1,
 					position.getRank().getInverse().getRankNumber() - 1);
 		}
+	}
+
+	private static ChessPosition gridToChessPosition(int col, int row) {
+		return new ChessPosition(File.getFile(col + 1), Rank.getRank(8 - row));
+	}
+
+	private boolean isLastMoveSquare(ChessPosition position) {
+		return lastMoveFrom.map(position::equals).orElse(false)
+				|| lastMoveTo.map(position::equals).orElse(false);
 	}
 
 	private static Pane createEmptyCell(double sideLength) {
@@ -420,5 +527,9 @@ public class Board {
 
 	private static PieceColor flipTurn(PieceColor color) {
 		return PieceColor.WHITE.equals(color) ? PieceColor.BLACK : PieceColor.WHITE;
+	}
+
+	private static String colorName(PieceColor color) {
+		return PieceColor.WHITE.equals(color) ? "White" : "Black";
 	}
 }
