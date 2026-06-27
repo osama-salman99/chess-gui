@@ -1,8 +1,0 @@
-<?import javafx.scene.layout.GridPane?>
-<GridPane fx:controller="osmosis.chessdemo.controllers.MainController"
-          xmlns:fx="http://javafx.com/fxml"
-          alignment="center"
-          prefWidth="500"
-          prefHeight="500"
-          fx:id="boardGridPane">
-</GridPane>

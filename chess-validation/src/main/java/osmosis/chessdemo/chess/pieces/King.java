@@ -1,0 +1,24 @@
+package osmosis.chessdemo.chess.pieces;
+
+import osmosis.chessdemo.chess.position.ChessPosition;
+
+public class King extends Piece {
+	public King(PieceColor color, ChessPosition position) {
+		super(color, position);
+	}
+
+	@Override
+	public boolean isMovementValid(ChessPosition destinationPosition) {
+		int fileDifference = Math.abs(destinationPosition.getFile().getFileNumber() - position.getFile().getFileNumber());
+		int rankDifference = Math.abs(destinationPosition.getRank().getRankNumber() - position.getRank().getRankNumber());
+		if (fileDifference == 0 && rankDifference == 0) {
+			return false;
+		}
+		return fileDifference <= 1 && rankDifference <= 1;
+	}
+
+	@Override
+	public Piece copy() {
+		return new King(color, position);
+	}
+}
