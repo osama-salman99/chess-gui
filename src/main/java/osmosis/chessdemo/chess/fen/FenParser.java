@@ -44,7 +44,8 @@ public class FenParser {
 		for (int fileNumber = 1; fileNumber <= 8; fileNumber++) {
 			char character = iterator.next();
 			if (Character.isDigit(character)) {
-				fileNumber += Character.getNumericValue(character);
+				// digit means N empty squares; the loop's own fileNumber++ adds 1, so we add N-1 here
+				fileNumber += Character.getNumericValue(character) - 1;
 				continue;
 			}
 			ChessPosition position = new ChessPosition(getFile(fileNumber), getRank(rankNumber));
